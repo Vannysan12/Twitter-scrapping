@@ -1,0 +1,141 @@
+import tweepy
+import pandas as pd
+import json
+import numbers
+import re
+import os.path
+import datetime
+
+pd.options.display.max_colwidth = 300
+pd.options.display.max_rows = 25
+pd.options.display.max_columns = None
+
+
+consumer_key = ""
+consumer_key_secret = ""
+access_token = ""
+access_token_secret = ""
+auth = tweepy.OAuthHandler(consumer_key, consumer_key_secret)
+auth.set_access_token(access_token, access_token_secret)
+api = tweepy.API(auth)
+
+class MyStreamListener(tweepy.StreamListener):
+
+    def __init__(self,limit=20,print_output=True,save_output=True,
+                 filename='file.csv',include_rts=True,strict_text_search=True,
+                 search_terms=None):
+        self.df = pd.DataFrame()
+        self.limit = limit
+        self.counter = 0
+        self.print_output = print_output
+        self.header=False
+        self.save_output=save_output
+        self.filename=filename
+        self.include_rts=include_rts
+        self.strict_text_search = strict_text_search
+        self.search_terms = search_terms
+
+    def on_data(self, data):
+        d = {}
+        decoded = json.loads(data)
+        
+        tweet_fields_to_collect = ['created_at','id','text','source','coordinates','place','retweeted','truncated']
+        user_fields_to_collect = ['name','screen_name','location','id_str','statuses_count','description']
+        if self.strict_text_search:
+            if not isinstance(self.search_terms, list):
+                self.search_terms = re.findall(r"[\w']+", self.search_terms)
+            if not any(term.lower() in decoded['text'].lower() for term in self.search_terms):
+                print ("skipped")
+                print (decoded['text'])
+                return True
+        for k,v in decoded.items():
+            
+                          
+            if k in tweet_fields_to_collect:
+                if isinstance(v, numbers.Number):
+                    v = str(v)
+                try:
+                    d['tweet_' + k.strip()] = v
+                except:
+                    print ("Failure collecting tweet field", v.encode('ascii', 'ignore'))
+            if k=='user':
+                for user_k,user_v in v.items():
+                    if user_k in user_fields_to_collect:
+                        if isinstance(user_v, numbers.Number):
+                            user_v = str(user_v)
+                        try:
+                            d[user_k.strip()]=user_v
+                        except:
+                            print ("Failure collecting user field",user_v.encode('ascii', 'ignore'))
+            if k=='retweeted_status':
+                for retweet_k,retweet_v in v.items():
+                    if retweet_k in tweet_fields_to_collect:
+                        if isinstance(retweet_v, numbers.Number):
+                            retweet_v = str(retweet_v)
+                        try:
+                            d['retweet_'+retweet_k.strip()]=retweet_v
+                        except:
+                            print ("Failure collecting retweet field",user_v.encode('ascii', 'ignore'))
+                            
+            if 'extended_tweet' in decoded: 
+                print(decoded['extended_tweet']['full_text']) 
+            
+            
+            
+        if not self.include_rts:
+            if ('retweet_text' in d and len(d['retweet_text'])>0) or d['tweet_text'].startswith('RT @'):
+                return True
+        tweet_df = pd.DataFrame(d, index=[0])
+        frames = [self.df, tweet_df]
+        self.df = pd.concat(frames)
+        self.counter+=1
+        if self.print_output:
+            try:
+                print(decoded['text'])
+            except:
+                print("Failure outputting tweet text",decoded['text'].encode('ascii', 'ignore'))
+        if self.counter>=self.limit:
+            print("finished collecting %s tweets, ending" % self.limit)
+            if self.include_rts and 'retweet_text' in self.df.columns:
+                self.df = self.df[['tweet_' + x for x in tweet_fields_to_collect] + user_fields_to_collect + ['retweet_' + x for x in tweet_fields_to_collect]]
+            else:
+                self.df = self.df[['tweet_' + x for x in tweet_fields_to_collect] + user_fields_to_collect]
+            self.df.rename(columns={'id_str':'user_id'},inplace=True)
+            self.df.to_csv(self.filename, index=False, encoding='utf-8')
+            return False
+        else:
+            return True
+    
+    def on_status(self, status):
+        try:
+            if hasattr(status, 'retweeted_status') and hasattr(status.retweeted_status, 'extended_tweet'):
+                print('retweeted: ' + status.retweeted_status.extended_tweet['full_text'])
+            if hasattr(status, 'extended_tweet'):
+                print('extended_tweet: ' + status.extended_tweet['full_text'])
+            else:
+                print('text: ' + status.text)
+        except AttributeError:
+            print('attribute error: ' + status.text)
+        
+    def on_error(self, status_code):
+        if status_code == 420:
+            return False
+        
+    def on_disconnect(self, notice):
+        print("disconnecting due to " + str(notice))
+        
+        
+        
+key_words = "city"
+           
+filename = '%s_%s.csv' % (key_words, datetime.datetime.now().strftime("%Y-%m-%d_%H.%M.%S"))
+myStreamListener = MyStreamListener(limit=100,
+                                    print_output=False,
+                                    filename=filename,
+                                    search_terms=key_words,
+                                    strict_text_search=True)
+myStream = tweepy.Stream(auth, listener=myStreamListener, tweet_mode='extended')
+myStream.filter(track=[key_words])
+my_construction_list = pd.read_csv(filename)
+
+my_construction_list
